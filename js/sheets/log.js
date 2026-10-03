@@ -149,7 +149,7 @@ function activityEstimate() {
   const e = activityEntry();
   const ok = e.type === "pas" ? e.steps > 0 : e.durationMin > 0;
   $("#actEstimate", act.ctrl.body).innerHTML = ok
-    ? String(html`${ic("flame", "icon-sm")}Environ <b>${fmtInt(activityKcal(e, store.state.profile.weightKg))} kcal</b> dépensées`)
+    ? String(html`${ic("flame", "icon-sm")}Environ <b>${fmtInt(activityKcal(e, store.state.profile.weightKg, store.state.profile.heightCm))} kcal</b> dépensées en plus de ta dépense de base`)
     : "";
 }
 function renderActivity() {

@@ -6,13 +6,14 @@ import { html, ic, actionsFor, inputsFor, $ } from "../ui/dom.js";
 import { pageHead, weekStrip, exerciseRow, emptyState, disclaimer } from "../ui/components.js";
 import { store } from "../core/store.js";
 import { ui } from "../ui/state.js";
-import { todayKey, parseDateOnly, relativeDay, fmtInt, DAY_NAMES, fmtDuration, normTxt } from "../core/util.js";
+import { todayKey, parseDateOnly, relativeDay, fmtInt, DAY_NAMES, fmtDuration, normTxt, fmtDateFr } from "../core/util.js";
 import { dayPlan, weekPlan, dayStats } from "../engine/stats.js";
 import {
   sessionEstimate, sessionProgress, sessionDoneOn, materielPossible, filtreMateriel, filtreMaterielRestreint, EXERCISES, levelRank,
+  weeklyVolume, moveSuggestion,
 } from "../engine/training.js";
 import { GROUP_LABELS, EQUIP_LABELS, LEVEL_LABELS } from "../engine/labels.js";
-import { setEquipFilter, finishSession, reopenSession } from "../domain.js";
+import { setEquipFilter, finishSession, reopenSession, moveSession, cancelMove } from "../domain.js";
 import { confirmDialog } from "../ui/sheet.js";
 import { toast } from "../ui/toast.js";
 import { weekMarks } from "./today.js";
@@ -42,6 +43,7 @@ function sessionHeader(day) {
       ${done ? html`<span class="chip is-success">${ic("circle-check")}Terminée${log && log.durationSec ? ` · ${fmtDuration(log.durationSec)}` : ""}</span>` : prog.done ? html`<span class="chip is-accent">${prog.done}/${prog.total} validés</span>` : ""}
     </div>
     <h2 class="session-hero__title">${day.label}</h2>
+    ${day.movedFrom ? html`<p class="session-hero__moved">${ic("calendar")}Reportée du ${dayName(day.movedFrom)} · <button type="button" class="link" data-action="session-unmove" data-from="${day.movedFrom}">remettre à sa place</button></p>` : ""}
     <div class="session-hero__stats">
       <div><b class="num">${day.exercises.length}</b><span>exercices</span></div>
       <div><b class="num">~${est.minutes}</b><span>minutes</span></div>
@@ -53,6 +55,43 @@ function sessionHeader(day) {
         ? html`<button type="button" class="btn btn-secondary" data-action="session-reopen" data-dk="${day.dateKey}">${ic("rotate-ccw")}Rouvrir</button>`
         : html`<a class="btn btn-primary" href="#/workout/${day.dateKey}">${ic("play")}${prog.done ? "Continuer" : "Démarrer"}</a>
                <button type="button" class="btn btn-secondary" data-action="session-finish" data-dk="${day.dateKey}">${ic("check")}Tout valider</button>`}
+    </div>
+  </section>`;
+}
+
+const dayName = (dk) => fmtDateFr(parseDateOnly(dk)).toLowerCase();
+
+/* Séance manquée : proposer de la reporter plutôt que de la perdre. */
+function moveBanner(week) {
+  const sug = moveSuggestion(week);
+  if (!sug) return "";
+  const when = sug.to === todayKey() ? "aujourd'hui" : dayName(sug.to);
+  return html`<div class="note is-warn mt-16">${ic("calendar")}<div class="grow">
+    <p><b>Séance du ${dayName(sug.from.dateKey)} manquée</b> (${sug.from.label}). Reporte-la ${when === "aujourd'hui" ? "à aujourd'hui" : "au " + when}, un jour de repos : ton programme reste complet.</p>
+    <button type="button" class="btn btn-secondary btn-sm mt-8" data-action="session-move" data-from="${sug.from.dateKey}" data-to="${sug.to}">${ic("arrow-right")}Reporter ${when === "aujourd'hui" ? "à aujourd'hui" : "au " + when}</button>
+  </div></div>`;
+}
+
+/* Séries prévues par groupe musculaire, comparées au repère du niveau. */
+function volumePanel(week) {
+  const rows = weeklyVolume(week);
+  if (!rows.length) return "";
+  const max = Math.max(...rows.map((r) => Math.max(r.planned, r.hi))) || 1;
+  const low = rows.filter((r) => r.status === "low");
+  return html`<section class="section">
+    <div class="section-head"><h2 class="section-title">Volume par muscle</h2><span class="faint">séries / semaine</span></div>
+    <div class="card volume">
+      ${rows.map((r) => html`<div class="volume__row">
+        <span class="volume__label">${GROUP_LABELS[r.group]}</span>
+        <span class="volume__track">
+          <i class="volume__range" style="left:${((100 * r.lo) / max).toFixed(1)}%;width:${((100 * (r.hi - r.lo)) / max).toFixed(1)}%"></i>
+          <i class="volume__plan is-${r.status}" style="width:${((100 * r.planned) / max).toFixed(1)}%"></i>
+          <i class="volume__done" style="width:${((100 * Math.min(r.done, r.planned)) / max).toFixed(1)}%"></i>
+        </span>
+        <span class="volume__val num">${r.done ? html`<b>${r.done}</b>/` : ""}${r.planned}</span>
+      </div>`)}
+      <p class="volume__legend"><span><i class="is-range"></i>Repère ${rows[0].lo}–${rows[0].hi} séries</span><span><i class="is-done"></i>Fait</span></p>
+      ${low.length ? html`<p class="volume__hint">${ic("info", "icon-sm")}${low.map((r) => GROUP_LABELS[r.group]).join(", ")} : sous le repère cette semaine. Ajouter une séance ou cibler ${low.length > 1 ? "ces zones" : "cette zone"} dans ton profil rééquilibre le programme.</p>` : ""}
     </div>
   </section>`;
 }
@@ -69,7 +108,7 @@ function weekOverview() {
         return html`<button type="button" class="list-row week-row${d.dateKey === ui.date ? " is-current" : ""}" data-action="select-day" data-dk="${d.dateKey}">
           <span class="week-row__day${d.dateKey === today ? " is-today" : ""}"><b>${DAY_NAMES[(d.date.getDay() + 6) % 7].slice(0, 3)}</b><span>${d.date.getDate()}</span></span>
           <span class="list-row__body"><span class="list-row__title">${d.training ? d.label : "Repos"}</span>
-            <span class="list-row__sub">${d.training ? `${d.exercises.length} exercices${prog.done && !done ? ` · ${prog.done} validés` : ""}` : "Récupération, marche, étirements"}</span></span>
+            <span class="list-row__sub">${d.training ? `${d.exercises.length} exercices${d.movedFrom ? ` · reportée du ${dayName(d.movedFrom)}` : ""}${prog.done && !done ? ` · ${prog.done} validés` : ""}` : d.movedTo ? `Séance reportée au ${dayName(d.movedTo)}` : "Récupération, marche, étirements"}</span></span>
           ${done ? html`<span class="chip is-success">${ic("check")}Fait</span>` : d.training ? (d.dateKey < today ? html`<span class="chip">Manquée</span>` : html`<span class="chip is-accent">Prévue</span>`) : ""}
         </button>`;
       })}
@@ -83,6 +122,7 @@ export const trainingView = {
   render() {
     const p = store.state.profile;
     const day = dayPlan(ui.date).workout;
+    const week = weekPlan(parseDateOnly(ui.date)).workout;
     const ids = day && day.training ? day.exercises.map((e) => e.id).join(",") : "";
     return html`
       ${pageHead({
@@ -92,6 +132,7 @@ export const trainingView = {
       })}
       ${weekStrip(weekMarks)}
       ${equipBar()}
+      ${moveBanner(week)}
       <div class="cols mt-16">
         <div>
           ${day && day.training ? html`
@@ -107,6 +148,7 @@ export const trainingView = {
         </div>
         <div>
           ${weekOverview()}
+          ${volumePanel(week)}
           <a class="card card-link library-cta mt-16" href="#/library">
             <span class="library-cta__icon">${ic("book-open")}</span>
             <span class="grow"><b>Bibliothèque d'exercices</b><span>${EXERCISES.length} mouvements expliqués, avec photos et muscles sollicités</span></span>
@@ -145,6 +187,8 @@ actionsFor({
     }
     if (await finishSession(dk)) toast("Séance validée. Bravo !");
   },
+  "session-move": (el) => moveSession(el.dataset.from, el.dataset.to),
+  "session-unmove": (el) => cancelMove(el.dataset.from),
   "session-reopen": async (el) => { await reopenSession(el.dataset.dk); toast("Séance rouverte.", { type: "info" }); },
 });
 

@@ -1,48 +1,85 @@
 /* =========================================================================
    MOTEUR D'ENTRAÎNEMENT
-   Construction du programme hebdomadaire, objectifs par exercice, calcul
-   des calories et suivi de la charge. La logique de tirage est reprise à
-   l'identique : une même semaine propose toujours les mêmes exercices.
+   Construction du programme hebdomadaire (tirage déterministe : une même
+   semaine propose toujours les mêmes exercices), prescription selon
+   l'objectif, progression automatique d'une séance à l'autre, dépense
+   nette des activités, remplacement d'exercice, report de séance et
+   volume hebdomadaire par groupe musculaire.
    ========================================================================= */
 import { EXERCISES } from "../data/exercises.js";
 import { EXERCISE_PHOTOS } from "../data/exercise-photos.js";
+import { EXERCISE_MUSCLES } from "../data/muscles.js";
 import { store } from "../core/store.js";
-import { addDays, dateKey, weekIndex, genId, hashStr, mulberry32, seededShuffle, fmtKg, fmtDateFr, parseDateOnly } from "../core/util.js";
+import { on } from "../core/events.js";
+import { addDays, dateKey, weekIndex, genId, hashStr, mulberry32, seededShuffle, fmtKg, fmtDateFr, parseDateOnly, todayKey, startOfWeek } from "../core/util.js";
 import { GROUP_LABELS } from "./labels.js";
 
 const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
+/* Index par groupe : le tirage ne parcourt plus tout le catalogue. L'ordre
+   du catalogue est conservé, le tirage reste donc déterministe. */
+const BY_GROUP = new Map();
+for (const e of EXERCISES) { if (!BY_GROUP.has(e.group)) BY_GROUP.set(e.group, []); BY_GROUP.get(e.group).push(e); }
+
+/* Caches recalculés à chaque modification des données. */
+const cache = new Map();
+on("change", () => cache.clear());
+function memo(key, fn) {
+  if (!cache.has(key)) cache.set(key, fn());
+  return cache.get(key);
+}
 export const exerciseById = (id) => BY_ID.get(id) || null;
+/* Ressemblance des muscles principaux de deux exercices (0 à 1). */
+function muscleOverlap(a, b) {
+  const pa = new Set(((EXERCISE_MUSCLES[a.id] || {}).p || []).map((r) => r.replace(/_[lr]$/, "")));
+  const pb = new Set(((EXERCISE_MUSCLES[b.id] || {}).p || []).map((r) => r.replace(/_[lr]$/, "")));
+  if (!pa.size || !pb.size) return 0;
+  let inter = 0;
+  for (const r of pa) if (pb.has(r)) inter++;
+  return inter / (pa.size + pb.size - inter);
+}
 export { EXERCISES };
+export const weekKeyOf = (dk) => dateKey(startOfWeek(parseDateOnly(dk)));
 
 export function exercisePhotos(id) {
   const n = EXERCISE_PHOTOS[id] || 0;
   return Array.from({ length: n }, (_, i) => `assets/exercises/${id}-${i + 1}.webp`);
 }
 
-/* Fourchettes conseillées selon le niveau, affichées dans la fiche. Les
-   maintiens isométriques se prescrivent en durée de tenue ; les mouvements
-   continus non cardio (ciseaux, cercles de bras) en secondes. */
-export const LEVEL_SETSREPS = { debutant: "2–3 séries × 10–12 reps", intermediaire: "3–4 séries × 8–12 reps", avance: "4–5 séries × 6–10 reps" };
-export const LEVEL_SETSREPS_CARDIO = { debutant: "3 × 30–40 s", intermediaire: "4 × 40–50 s", avance: "5 × 45–60 s" };
-export const LEVEL_SETSREPS_HOLD = { debutant: "2–3 × 20–30 s de tenue", intermediaire: "3 × 30–45 s de tenue", avance: "3–4 × 45–60 s de tenue" };
-export const LEVEL_SETSREPS_TIMED = { debutant: "2–3 × 30–40 s", intermediaire: "3 × 40–50 s", avance: "3–4 × 50–60 s" };
-export function rangeLabel(ex, level) {
-  const t = ex.hold ? LEVEL_SETSREPS_HOLD : ex.cardio ? LEVEL_SETSREPS_CARDIO : ex.timed ? LEVEL_SETSREPS_TIMED : LEVEL_SETSREPS;
-  return t[level] || t.debutant;
-}
-
-/* Équivalents METs approximatifs (Compendium of Physical Activities) pour
-   les activités ajoutées à la main. kcal = MET × poids (kg) × durée (h).
-   Pour les pas : ~0,0005 kcal/pas/kg (≈100 kcal pour 2000 pas à 75 kg). */
+/* =========================================================================
+   DÉPENSE DES ACTIVITÉS LIBRES
+   Toutes les dépenses sont NETTES : la part du métabolisme de repos
+   (1 MET) est retirée, puisqu'elle est déjà comptée dans la dépense de base
+   de la journée — une heure de marche n'est plus comptée deux fois.
+   Quand la distance est connue, elle prime sur la durée : le coût de la
+   course (~1 kcal/kg/km) et de la marche (~0,5 kcal/kg/km net) dépend de
+   la distance bien plus que de l'allure.
+   ========================================================================= */
 export const INTENSITY_MET = { legere: 3.5, moderee: 5.0, intense: 7.0 };
 export const CARDIO_MET = { marche: 3.8, course: 9.0, velo: 7.5, natation: 7.0 };
-const STEPS_KCAL_PER_STEP_PER_KG = 0.0005;
+const netMet = (met) => Math.max(0, met - 1);
+function veloMet(kmh) {
+  if (kmh < 16) return 6.0;
+  if (kmh < 19) return 8.0;
+  if (kmh < 22) return 10.0;
+  return 12.0;
+}
 
-export function activityKcal(entry, weightKg) {
-  if (entry.type === "exercice") return Math.round((INTENSITY_MET[entry.intensity] || 5.0) * weightKg * (entry.durationMin / 60));
-  if (CARDIO_MET[entry.type]) return Math.round(CARDIO_MET[entry.type] * weightKg * (entry.durationMin / 60));
-  if (entry.type === "pas") return Math.round(entry.steps * weightKg * STEPS_KCAL_PER_STEP_PER_KG);
-  return 0;
+export function activityKcal(entry, weightKg, heightCm = 170) {
+  const h = (entry.durationMin || 0) / 60;
+  const km = entry.distanceKm > 0 ? entry.distanceKm : 0;
+  switch (entry.type) {
+    case "exercice": return Math.round(netMet(INTENSITY_MET[entry.intensity] || 5.0) * weightKg * h);
+    case "course": return Math.round((km ? 0.95 * km : netMet(CARDIO_MET.course) * h) * weightKg);
+    case "marche": return Math.round((km ? 0.5 * km : netMet(CARDIO_MET.marche) * h) * weightKg);
+    case "velo": return Math.round(netMet(km && h ? veloMet(km / h) : CARDIO_MET.velo) * weightKg * h);
+    case "natation": return Math.round(netMet(CARDIO_MET.natation) * weightKg * h);
+    case "pas": {
+      /* Foulée ≈ 41,5 % de la taille, marche ≈ 0,5 kcal/kg/km net. */
+      const dist = (entry.steps * heightCm * 0.415) / 100000;
+      return Math.round(0.5 * weightKg * dist);
+    }
+    default: return 0;
+  }
 }
 
 /* Le niveau ne fixe pas le nombre de séances : il joue sur la difficulté
@@ -173,8 +210,8 @@ function pickExercisesForSession(split, profile, wIdx, avoidIds) {
   let chosen = [];
   split.groups.forEach((g) => {
     const autorise = filtreMateriel();
-    let pool = EXERCISES.filter((e) => {
-      if (e.group !== g || e.minLevel > lvl || !eq[e.equip]) return false;
+    let pool = (BY_GROUP.get(g) || []).filter((e) => {
+      if (e.minLevel > lvl || !eq[e.equip]) return false;
       if (!autorise.includes(e.equip)) return false;
       /* Sur une séance ciblée ischios ou quadriceps, on ne retient que les
          mouvements de la chaîne concernée. */
@@ -187,8 +224,8 @@ function pickExercisesForSession(split, profile, wIdx, avoidIds) {
     const fresh = pool.filter((e) => !avoid.includes(e.id));
     if (fresh.length >= split.per) pool = fresh;
     if (!pool.length) {
-      pool = EXERCISES.filter((e) => {
-        if (e.group !== g || e.minLevel > lvl || !eq[e.equip]) return false;
+      pool = (BY_GROUP.get(g) || []).filter((e) => {
+        if (e.minLevel > lvl || !eq[e.equip]) return false;
         if (split.chain && g === "jambes" && e.chain && e.chain !== split.chain) return false;
         return true;
       });
@@ -219,13 +256,108 @@ export function generateWeekWorkout(monday, profile) {
     if (s) {
       const exs = pickExercisesForSession(s, profile, wIdx, prevIds);
       prevIds = exs.map((e) => e.id);
-      days.push({ date: d, dateKey: dateKey(d), training: true, label: s.label, groups: s.groups, exercises: exs });
+      days.push({ date: d, dateKey: dateKey(d), training: true, label: s.label, groups: s.groups, chain: s.chain, exercises: exs });
     } else {
       /* La mémoire de la dernière séance traverse les jours de repos. */
       days.push({ date: d, dateKey: dateKey(d), training: false, label: "Repos", exercises: [] });
     }
   }
+  applyMoves(days);
+  applySwaps(days);
   return days;
+}
+
+/* ---------- Séance déplacée ----------
+   Une séance manquée en début de semaine peut être reportée sur un jour de
+   repos : le programme garde les mêmes exercices, simplement décalés. */
+function applyMoves(days) {
+  const moves = store.state.sessionMoves || {};
+  for (const [from, to] of Object.entries(moves)) {
+    const i = days.findIndex((d) => d.dateKey === from);
+    const j = days.findIndex((d) => d.dateKey === to);
+    if (i < 0 || j < 0 || !days[i].training || days[j].training) continue;
+    const src = days[i];
+    days[j] = { ...src, date: days[j].date, dateKey: to, movedFrom: from };
+    days[i] = { date: src.date, dateKey: from, training: false, label: "Repos", exercises: [], movedTo: to };
+  }
+}
+
+/* ---------- Exercice remplacé ----------
+   Un exercice écarté (matériel occupé, gêne, envie de changer) est mémorisé
+   pour ce jour-là ; le remplaçant garde la place de l'original. */
+function applySwaps(days) {
+  const swaps = store.state.exerciseSwaps || {};
+  for (const d of days) {
+    if (!d.training) continue;
+    d.exercises = d.exercises.map((ex) => {
+      const alt = exerciseById(swaps[d.dateKey + "|" + ex.id]);
+      return alt ? Object.assign(Object.create(alt), { swappedFrom: ex.id }) : ex;
+    });
+  }
+}
+
+/* Remplaçants possibles : même groupe musculaire, matériel disponible,
+   niveau accessible, même chaîne pour les jambes ; les mouvements de même
+   nature (polyarticulaire / isolation) et illustrés passent en premier. */
+export function swapCandidates(day, ex) {
+  const profile = store.state.profile;
+  const lvl = levelRank(profile.level);
+  const eq = equipmentSetFor(profile);
+  const actifs = filtreMateriel();
+  const used = new Set(day.exercises.map((e) => e.id));
+  const origin = ex.swappedFrom ? exerciseById(ex.swappedFrom) : ex;
+  return (BY_GROUP.get(ex.group) || [])
+    .filter((e) => !used.has(e.id) && e.minLevel <= lvl && eq[e.equip] && (!origin.chain || !e.chain || e.chain === origin.chain))
+    .map((e) => ({ e, score: 6 * muscleOverlap(e, origin) + (!!e.poly === !!origin.poly ? 3 : 0) + (actifs.includes(e.equip) ? 2 : 0) + ((EXERCISE_PHOTOS[e.id] || 0) ? 1 : 0) + (e.minLevel === origin.minLevel ? 1 : 0) }))
+    .sort((a, b) => b.score - a.score || a.e.name.localeCompare(b.e.name, "fr"))
+    .slice(0, 8)
+    .map((x) => x.e);
+}
+
+/* Séances prévues avant ce jour dans la semaine, ni faites ni commencées. */
+export function missedSessions(week, dk = todayKey()) {
+  return week.filter((d) => d.training && d.dateKey < dk && !d.movedFrom
+    && !store.state.sessionLog.some((s) => s.dateKey === d.dateKey)
+    && !store.state.activityLog.some((e) => e.dateKey === d.dateKey && e.exId));
+}
+export function canMoveSession(week, from, to) {
+  const a = week.find((d) => d.dateKey === from);
+  const b = week.find((d) => d.dateKey === to);
+  return !!(a && b && a.training && !b.training && from < to && missedSessions(week, to).some((d) => d.dateKey === from));
+}
+
+/* Proposition de report : la plus ancienne séance manquée de la semaine
+   vers le premier jour de repos à venir (aujourd'hui compris). */
+export function moveSuggestion(week, dk = todayKey()) {
+  const missed = missedSessions(week, dk);
+  if (!missed.length) return null;
+  const target = week.find((d) => !d.training && d.dateKey >= dk);
+  return target ? { from: missed[0], to: target.dateKey } : null;
+}
+
+/* =========================================================================
+   VOLUME HEBDOMADAIRE PAR GROUPE MUSCULAIRE
+   Repère de séries effectives par groupe et par semaine (Schoenfeld 2017,
+   ACSM) : 6 à 10 pour débuter, 10 à 16 puis 12 à 20 avec l'expérience.
+   ========================================================================= */
+const VOLUME_RANGE = { debutant: [6, 10], intermediaire: [10, 16], avance: [12, 20] };
+export function weeklyVolume(week) {
+  const profile = store.state.profile;
+  const [lo, hi] = VOLUME_RANGE[profile.level] || VOLUME_RANGE.debutant;
+  const zones = activeZones(profile).filter((g) => g !== "cardio");
+  const rows = zones.map((g) => ({ group: g, planned: 0, done: 0, lo, hi }));
+  const byGroup = new Map(rows.map((r) => [r.group, r]));
+  for (const d of week) {
+    for (const ex of d.exercises || []) {
+      const r = byGroup.get(ex.group);
+      if (!r) continue;
+      r.planned += prescription(ex, profile, d.dateKey).sets;
+      const entry = store.state.activityLog.find((e) => e.dateKey === d.dateKey && e.exId === ex.id);
+      if (entry) r.done += entry.sets;
+    }
+  }
+  for (const r of rows) r.status = r.planned < lo ? "low" : r.planned > hi ? "high" : "ok";
+  return rows;
 }
 
 /* =========================================================================
@@ -234,47 +366,182 @@ export function generateWeekWorkout(monday, profile) {
    valeurs MET (effort léger ~3,5, modéré ~5, vigoureux ~6) incluent déjà
    les temps de repos entre séries.
    ========================================================================= */
-const EXO_MET_BY_LEVEL = { 1: 3.5, 2: 5.0, 3: 6.0 };
-const LEVEL_TARGETS = { debutant: { sets: 3, reps: 12 }, intermediaire: { sets: 4, reps: 12 }, avance: { sets: 5, reps: 10 } };
+/* ---------- Prescription selon l'objectif ----------
+   La fourchette de répétitions dépend de l'objectif (ACSM) : charges
+   lourdes et repos longs pour la prise de muscle, séries plus longues et
+   repos courts pour la perte de poids. Le niveau règle le nombre de séries.
+   Les exercices en secondes gardent leur barème par niveau. */
+const GOAL_REPS = {
+  prise: { poly: [6, 10], iso: [8, 12], rest: { poly: 120, iso: 75 } },
+  maintien: { poly: [8, 12], iso: [10, 12], rest: { poly: 90, iso: 60 } },
+  tonification: { poly: [8, 12], iso: [12, 15], rest: { poly: 75, iso: 60 } },
+  perte: { poly: [10, 15], iso: [12, 15], rest: { poly: 60, iso: 45 } },
+};
+const LEVEL_SETS = { debutant: { poly: 3, iso: 2 }, intermediaire: { poly: 4, iso: 3 }, avance: { poly: 5, iso: 4 } };
 const LEVEL_TARGETS_CARDIO = { debutant: { sets: 3, reps: 35 }, intermediaire: { sets: 4, reps: 45 }, avance: { sets: 5, reps: 55 } };
 const LEVEL_TARGETS_HOLD = { debutant: { sets: 3, reps: 25 }, intermediaire: { sets: 3, reps: 38 }, avance: { sets: 4, reps: 50 } };
 const LEVEL_TARGETS_TIMED = { debutant: { sets: 3, reps: 35 }, intermediaire: { sets: 3, reps: 45 }, avance: { sets: 4, reps: 55 } };
+/* Paliers de charge : 2 kg par haltère, 5 kg sur machine. */
+const loadStep = (ex) => (ex.equip === "machines" ? 5 : 2);
+const roundLoad = (kg, step) => Math.max(0, Math.round(kg / step) * step);
 
-export function exerciseTarget(ex, profile) {
-  const bareme = ex.hold ? LEVEL_TARGETS_HOLD : ex.cardio ? LEVEL_TARGETS_CARDIO : ex.timed ? LEVEL_TARGETS_TIMED : LEVEL_TARGETS;
-  const t = bareme[profile.level] || { sets: 3, reps: 12 };
-  /* enSecondes couvre les cas où l'unité n'est pas la répétition. */
-  return { sets: t.sets, reps: t.reps, cardio: !!ex.cardio, hold: !!ex.hold, timed: !!ex.timed, enSecondes: !!(ex.cardio || ex.hold || ex.timed) };
-}
-export function targetLabel(ex, profile) {
-  const t = exerciseTarget(ex, profile);
-  return t.enSecondes ? `${t.sets} × ${t.reps} s` : `${t.sets} × ${t.reps}`;
+function basePrescription(ex, profile) {
+  const timed = !!(ex.cardio || ex.hold || ex.timed);
+  const kind = ex.poly ? "poly" : "iso";
+  let sets, lo, hi, rest;
+  if (timed) {
+    const bareme = ex.hold ? LEVEL_TARGETS_HOLD : ex.cardio ? LEVEL_TARGETS_CARDIO : LEVEL_TARGETS_TIMED;
+    const b = bareme[profile.level] || bareme.debutant;
+    sets = b.sets; lo = b.reps; hi = b.reps + 15;
+    if (ex.cardio && profile.goal === "perte") { lo += 5; hi += 5; }
+    rest = ex.hold ? 45 : 30;
+  } else {
+    const g = GOAL_REPS[profile.goal] || GOAL_REPS.maintien;
+    [lo, hi] = g[kind];
+    sets = (LEVEL_SETS[profile.level] || LEVEL_SETS.debutant)[kind];
+    rest = g.rest[kind] + (profile.level === "avance" && kind === "poly" ? 15 : 0);
+  }
+  return {
+    sets, reps: timed ? lo : Math.round((lo + hi) / 2), lo, hi, rest, load: 0,
+    cardio: !!ex.cardio, hold: !!ex.hold, timed: !!ex.timed, enSecondes: timed,
+    trend: "start", note: "",
+  };
 }
 
-/* Récupération entre séries : plus longue sur les polyarticulaires et pour
-   les niveaux avancés, qui travaillent plus lourd. */
-export function restSeconds(ex, profile) {
-  if (ex.cardio || ex.timed) return 30;
-  const base = { debutant: 60, intermediaire: 75, avance: 90 }[profile.level] || 60;
-  return ex.poly ? base : Math.max(45, base - 15);
+/* Dernière performance enregistrée AVANT ce jour. */
+function lastPerformance(exId, dk) {
+  const list = memo("perf:" + exId, () => store.state.activityLog
+    .filter((e) => e.exId === exId && e.sets > 0 && e.reps > 0)
+    .sort((a, b) => (a.dateKey < b.dateKey ? 1 : -1)));
+  return list.find((e) => e.dateKey < dk) || null;
 }
 
-export function exerciseMinutes(ex, sets, reps) {
+/* Variante plus difficile pour un mouvement au poids du corps maîtrisé :
+   même groupe, même matériel, même nature, niveau supérieur ; le nom en
+   commun (« Pompes … ») départage. */
+export function harderVariant(ex) {
+  const word = ex.name.split(/[\s«(]/)[0].toLowerCase();
+  const lvl = levelRank(store.state.profile.level);
+  const candidates = (BY_GROUP.get(ex.group) || [])
+    .filter((e) => e.id !== ex.id && e.equip === ex.equip && !!e.poly === !!ex.poly && !!e.hold === !!ex.hold
+      && e.minLevel > ex.minLevel && e.minLevel <= lvl && (!ex.chain || !e.chain || e.chain === ex.chain))
+    .map((e) => ({ e, overlap: muscleOverlap(e, ex), sameWord: e.name.toLowerCase().startsWith(word) }))
+    /* Même muscle principal exigé : une variante doit travailler la même
+       chose, plus fort. */
+    .filter((x) => x.overlap >= 0.5 || x.sameWord)
+    .sort((a, b) => (b.sameWord - a.sameWord) || (b.overlap - a.overlap) || (a.e.minLevel - b.e.minLevel));
+  return candidates.length ? candidates[0].e : null;
+}
+
+/* =========================================================================
+   PROGRESSION AUTOMATIQUE (double progression)
+   À partir de la dernière séance de l'exercice :
+   — objectif atteint sous le haut de la fourchette : +1 répétition ;
+   — haut de la fourchette atteint : charge augmentée d'un palier et retour
+     au bas de la fourchette (ou variante plus difficile au poids du corps) ;
+   — objectif presque atteint (80–99 %) : on consolide ;
+   — nettement manqué (< 80 %) : charge allégée de 10 % ;
+   — plus de 3 semaines sans le faire : reprise à -10 %.
+   ========================================================================= */
+export function prescription(ex, profile, dk = null) {
+  return memo(`rx:${ex.id}|${dk || ""}|${profile.goal}|${profile.level}`, () => {
+    const rx = basePrescription(ex, profile);
+    if (!dk) return rx;
+    const chargeable = exercicePeutEtreCharge(ex);
+    const last = lastPerformance(ex.id, dk);
+    if (!last) {
+      rx.note = rx.enSecondes ? "Première fois : tiens la durée indiquée, sans forcer."
+        : chargeable ? "Première fois : choisis une charge qui laisse 2 répétitions en réserve."
+        : "Première fois : garde 2 répétitions en réserve sur chaque série.";
+      return rx;
+    }
+    const lastLoad = last.load > 0 ? last.load : 0;
+    const completion = typeof last.completion === "number" ? last.completion : 100;
+    const gapDays = Math.round((parseDateOnly(dk) - parseDateOnly(last.dateKey)) / 86400000);
+    rx.last = { dateKey: last.dateKey, sets: last.sets, reps: last.reps, load: lastLoad, completion };
+    rx.load = lastLoad;
+    if (gapDays > 21) {
+      rx.reps = Math.max(rx.lo, Math.min(rx.hi, last.reps));
+      if (lastLoad) rx.load = roundLoad(lastLoad * 0.9, loadStep(ex) / 2);
+      rx.trend = "down";
+      rx.note = `Reprise après ${Math.round(gapDays / 7)} semaines : on repart un peu plus léger.`;
+      return rx;
+    }
+    if (rx.enSecondes) {
+      if (completion >= 100 && last.reps >= rx.hi) { rx.reps = rx.hi; rx.sets += 1; rx.trend = "up"; rx.note = "Durée maximale atteinte : une série de plus."; }
+      else if (completion >= 100) { rx.reps = Math.min(rx.hi, last.reps + 5); rx.trend = "up"; rx.note = "+5 secondes par série par rapport à la dernière fois."; }
+      else if (completion >= 80) { rx.reps = Math.max(rx.lo, last.reps); rx.trend = "same"; rx.note = "Consolide : même durée que la dernière fois."; }
+      else { rx.reps = Math.max(rx.lo - 10, last.reps - 5); rx.trend = "down"; rx.note = "Durée réduite pour finir toutes tes séries."; }
+      return rx;
+    }
+    if (completion >= 100 && last.reps >= rx.hi) {
+      if (chargeable) {
+        rx.load = lastLoad ? roundLoad(lastLoad + loadStep(ex), 0.5) : 0;
+        rx.reps = rx.lo;
+        rx.trend = "load";
+        rx.note = lastLoad ? `Haut de la fourchette atteint : passe à ${fmtKg(rx.load)} et reprends à ${rx.lo} répétitions.`
+          : "Haut de la fourchette atteint : augmente la charge et note-la.";
+      } else {
+        const v = harderVariant(ex);
+        rx.reps = rx.hi;
+        rx.trend = "variant";
+        rx.variant = v ? v.id : null;
+        rx.note = v ? `Tu maîtrises ce mouvement : essaie « ${v.name} ».` : "Tu maîtrises ce mouvement : ralentis la descente (3 secondes).";
+      }
+    } else if (completion >= 100) {
+      rx.reps = Math.min(rx.hi, Math.max(rx.lo, last.reps + 1));
+      rx.trend = "up";
+      rx.note = `+1 répétition par série par rapport à la dernière fois${lastLoad ? ` à ${fmtKg(lastLoad)}` : ""}.`;
+    } else if (completion >= 80) {
+      rx.reps = Math.max(rx.lo, Math.min(rx.hi, last.reps));
+      rx.trend = "same";
+      rx.note = "Presque ! Même objectif que la dernière fois.";
+    } else {
+      rx.reps = Math.max(rx.lo, Math.min(rx.hi, last.reps));
+      if (chargeable && lastLoad) rx.load = roundLoad(lastLoad * 0.9, loadStep(ex) / 2);
+      rx.trend = "down";
+      rx.note = chargeable && lastLoad ? `Allège à ${fmtKg(rx.load)} pour finir toutes tes séries.` : "Objectif ajusté pour finir toutes tes séries.";
+    }
+    return rx;
+  });
+}
+/* Compatibilité : l'objectif d'un exercice, personnalisé si le jour est connu. */
+export const exerciseTarget = (ex, profile, dk = null) => prescription(ex, profile, dk);
+
+export function targetLabel(ex, profile, dk = null) {
+  const t = prescription(ex, profile, dk);
+  return `${t.sets} × ${t.reps}${t.enSecondes ? " s" : ""}`;
+}
+export function rangeLabel(ex, profile) {
+  const t = basePrescription(ex, profile);
+  return t.enSecondes ? `${t.lo}–${t.hi} s par série` : `${t.lo}–${t.hi} répétitions`;
+}
+export const restSeconds = (ex, profile, dk = null) => prescription(ex, profile, dk).rest;
+
+/* Durée réelle : travail (≈ 3 s par répétition) + repos entre séries +
+   une minute de mise en place. */
+export function exerciseMinutes(ex, sets, reps, rest = 60) {
   const workSec = ex.cardio || ex.hold || ex.timed ? reps : reps * 3;
-  return sets * (workSec / 60 + 1.5);
+  return (sets * workSec + Math.max(0, sets - 1) * rest + 60) / 60;
 }
-export function exerciseKcal(ex, sets, reps, profile) {
-  const met = (EXO_MET_BY_LEVEL[ex.minLevel] || 4.0) + (ex.cardio ? 1.5 : ex.hold ? 0.5 : 0);
-  return Math.max(1, Math.round((met * profile.weightKg * exerciseMinutes(ex, sets, reps)) / 60));
+/* MET du Compendium (repos inclus) : renforcement vigoureux ~5–6,
+   isolation ~3,5, circuit cardio ~8, gainage ~3,8. Dépense nette. */
+function exerciseMet(ex, profile) {
+  const base = ex.cardio || ex.group === "cardio" ? 8.0 : ex.hold ? 3.8 : ex.poly ? 5.0 : 3.5;
+  return base * ({ debutant: 0.9, intermediaire: 1.0, avance: 1.1 }[profile.level] || 1);
+}
+export function exerciseKcal(ex, sets, reps, profile, rest) {
+  const r = rest || basePrescription(ex, profile).rest;
+  return Math.max(1, Math.round((netMet(exerciseMet(ex, profile)) * profile.weightKg * exerciseMinutes(ex, sets, reps, r)) / 60));
 }
 
 /* Estimation d'une séance complète, pour l'annoncer avant de la démarrer. */
 export function sessionEstimate(day, profile) {
   let min = 0, kcal = 0;
   for (const ex of day.exercises || []) {
-    const t = exerciseTarget(ex, profile);
-    min += exerciseMinutes(ex, t.sets, t.reps);
-    kcal += exerciseKcal(ex, t.sets, t.reps, profile);
+    const t = prescription(ex, profile, day.dateKey);
+    min += exerciseMinutes(ex, t.sets, t.reps, t.rest);
+    kcal += exerciseKcal(ex, t.sets, t.reps, profile, t.rest);
   }
   return { minutes: Math.round(min), kcal };
 }
@@ -291,13 +558,16 @@ export const sessionDoneOn = (dk) => store.state.sessionLog.some((s) => s.dateKe
 
 export function buildExerciseEntry(dk, ex, sets, reps) {
   const profile = store.state.profile;
-  const t = exerciseTarget(ex, profile);
+  const t = prescription(ex, profile, dk);
   const completion = Math.round((100 * (sets * reps)) / Math.max(1, t.sets * t.reps));
   return {
     id: genId("act"), dateKey: dk, type: "exercice", exId: ex.id, name: ex.name,
-    durationMin: Math.max(1, Math.round(exerciseMinutes(ex, sets, reps))),
+    durationMin: Math.max(1, Math.round(exerciseMinutes(ex, sets, reps, t.rest))),
     intensity: ex.minLevel >= 3 ? "intense" : ex.minLevel === 2 ? "moderee" : "legere",
-    kcal: exerciseKcal(ex, sets, reps, profile), auto: true, sets, reps, completion,
+    kcal: exerciseKcal(ex, sets, reps, profile, t.rest), auto: true, sets, reps, completion,
+    /* L'objectif du jour est conservé : la progression suivante s'appuie
+       sur ce qui était demandé, pas seulement sur ce qui a été fait. */
+    targetSets: t.sets, targetReps: t.reps,
   };
 }
 
@@ -325,7 +595,7 @@ export function applySessionDone(state, dk, label, exercises, { fillRemaining = 
   if (fillRemaining) {
     for (const ex of exercises || []) {
       if (state.activityLog.some((e) => e.dateKey === dk && e.exId === ex.id)) continue;
-      const t = exerciseTarget(ex, state.profile);
+      const t = prescription(ex, state.profile, dk);
       state.activityLog.push(buildExerciseEntry(dk, ex, t.sets, t.reps));
     }
   }
@@ -345,7 +615,7 @@ export function historiqueCharge(exId, sauf) {
 }
 export const derniereCharge = (exId, sauf) => historiqueCharge(exId, sauf)[0] || null;
 /* La charge n'a de sens que sur un mouvement chargé. */
-export const exercicePeutEtreCharge = (ex) => ex.equip === "halteres" || ex.equip === "machines" || ex.id === "j4" || ex.id === "f3";
+export function exercicePeutEtreCharge(ex) { return ex.equip === "halteres" || ex.equip === "machines" || ex.id === "j4" || ex.id === "f3"; }
 export const formatCharge = fmtKg;
 export function rappelCharge(ex, dk) {
   if (!exercicePeutEtreCharge(ex)) return "";

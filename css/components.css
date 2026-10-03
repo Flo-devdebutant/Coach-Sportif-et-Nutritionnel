@@ -451,8 +451,7 @@ body.is-sheet-open .toasts { bottom: auto; top: calc(var(--safe-top) + 14px); }
 .toast.is-error { background: var(--danger); color: #fff; }
 .toast.is-error .icon { color: #fff; }
 .toast__msg { flex: 1; min-width: 0; line-height: 1.35; }
-.toast__action { padding: 7px 12px; border-radius: 10px; font-weight: 700; font-size: 13.5px; color: var(--accent-strong); background: color-mix(in srgb, var(--bg) 12%, transparent); }
-:root[data-theme="light"] .toast__action, :root:not([data-theme]) .toast__action { color: var(--accent); }
+.toast__action { padding: 7px 12px; border-radius: 10px; font-weight: 700; font-size: 13.5px; color: #12160A; background: var(--accent); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(16px) scale(.96); } }
 @keyframes toast-out { to { opacity: 0; transform: translateY(10px) scale(.97); } }
 

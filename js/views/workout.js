@@ -33,7 +33,7 @@ const save = () => local.set(KEY, ws);
 const ex = () => exerciseById(ws.ids[ws.index]);
 const done = (id) => (ws.sets[id] || []).length;
 /* Objectif de séries, augmenté des séries supplémentaires demandées. */
-const targetSets = (e) => exerciseTarget(e, store.state.profile).sets + ((ws.extra || {})[e.id] || 0);
+const targetSets = (e) => exerciseTarget(e, store.state.profile, ws.dk).sets + ((ws.extra || {})[e.id] || 0);
 
 function load(dk) {
   const day = dayPlan(dk).workout;
@@ -104,7 +104,7 @@ async function logSet(reps, kg) {
   (ws.sets[e.id] = ws.sets[e.id] || []).push({ reps, load: kg || 0 });
   ws.timed = null;
   save();
-  const rest = restSeconds(e, store.state.profile);
+  const rest = restSeconds(e, store.state.profile, ws.dk);
   if (done(e.id) < targetSets(e)) { startRest(rest, "same"); return; }
   await completeExercise(e.id);
   const allDone = ws.ids.every((id) => done(id) >= targetSets(exerciseById(id)));
@@ -162,13 +162,13 @@ function restView() {
 function workView() {
   const e = ex();
   const p = store.state.profile;
-  const t = exerciseTarget(e, p);
+  const t = exerciseTarget(e, p, ws.dk);
   const n = done(e.id);
   const goal = targetSets(e);
   const finished = n >= goal;
   const last = (ws.sets[e.id] || [])[n - 1];
   const chargeable = exercicePeutEtreCharge(e);
-  const prevLoad = last ? last.load : (derniereCharge(e.id, ws.dk) || {}).load || 0;
+  const prevLoad = last ? last.load : t.load || (derniereCharge(e.id, ws.dk) || {}).load || 0;
   const dots = Math.max(goal, n);
   let controls;
   if (finished) {
@@ -202,7 +202,8 @@ function workView() {
       <p class="eyebrow">Exercice ${ws.index + 1} sur ${ws.ids.length} · ${GROUP_LABELS[e.group]}</p>
       <h1 class="player__name">${e.name}</h1>
       <div class="set-dots" aria-label="${n} séries sur ${goal}">${Array.from({ length: dots }, (_, k) => html`<i class="${k < n ? "is-done" : k === n && !finished ? "is-current" : ""}"></i>`)}</div>
-      <p class="player__target">${finished ? "Objectif atteint" : `Série ${n + 1} sur ${goal} · objectif ${t.reps}${t.enSecondes ? " secondes" : " répétitions"}`}</p>
+      <p class="player__target">${finished ? "Objectif atteint" : `Série ${n + 1} sur ${goal} · objectif ${t.reps}${t.enSecondes ? " secondes" : " répétitions"}${t.load ? " à " + fmtKg(t.load) : ""}`}</p>
+      ${n === 0 && t.note ? html`<p class="player__note">${ic(t.trend === "down" ? "trending-down" : t.trend === "start" ? "lightbulb" : "trending-up")}${t.note}</p>` : ""}
     </div>
     <div class="player__controls">${controls}</div>
     <footer class="player__foot">
@@ -213,6 +214,18 @@ function workView() {
     </footer>`;
 }
 
+/* Mieux que la dernière fois : plus de travail total (répétitions × charge,
+   ou répétitions seules au poids du corps). */
+function beatLast(id) {
+  const sets = ws.sets[id] || [];
+  const e = exerciseById(id);
+  const last = e && exerciseTarget(e, store.state.profile, ws.dk).last;
+  if (!sets.length || !last) return false;
+  const work = (n, reps, kg) => n * reps * (kg > 0 ? kg : 1);
+  const now = sets.reduce((a, x) => a + x.reps * (x.load > 0 ? x.load : 1), 0);
+  return now > work(last.sets, last.reps, last.load);
+}
+
 function summaryView() {
   const entries = store.state.activityLog.filter((e) => e.dateKey === ws.dk && ws.ids.includes(e.exId));
   const totalSets = ws.ids.reduce((s, id) => s + done(id), 0);
@@ -220,10 +233,12 @@ function summaryView() {
   const kcal = entries.reduce((s, e) => s + e.kcal, 0);
   const dur = Math.round(((ws.endedAt || Date.now()) - ws.startedAt) / 1000);
   const nbDone = ws.ids.filter((id) => done(id)).length;
+  const records = ws.ids.filter((id) => beatLast(id)).length;
   return html`<div class="summary-screen">
     <div class="summary-screen__badge">${ic("trophy", "icon-xl")}</div>
     <h1 class="summary-screen__title">${nbDone === ws.ids.length ? "Séance terminée !" : "Bien joué !"}</h1>
     <p class="muted">${ws.label}</p>
+    ${records ? html`<p class="chip is-accent mt-12">${ic("trending-up")}${records} exercice${records > 1 ? "s" : ""} en progrès par rapport à la dernière fois</p>` : ""}
     <div class="grid-2 mt-24 summary-screen__stats">
       <div class="stat"><p class="stat__label">${ic("clock")}Durée</p><p class="stat__value">${fmtDuration(dur)}</p></div>
       <div class="stat"><p class="stat__label">${ic("flame")}Énergie</p><p class="stat__value">${fmtInt(kcal)}<small>kcal</small></p></div>
@@ -290,7 +305,7 @@ function tick() {
     if (left <= 0) { beep(3); endRest(); }
   } else if (ws.timed && ws.timed.running) {
     const e = ex();
-    const target = exerciseTarget(e, store.state.profile).reps;
+    const target = exerciseTarget(e, store.state.profile, ws.dk).reps;
     const left = Math.max(0, (ws.timed.end - Date.now()) / 1000);
     const v = document.getElementById("woTimedVal");
     if (v) v.textContent = fmtDuration(Math.ceil(left));
@@ -315,7 +330,7 @@ actionsFor({
   },
   "wo-timed": () => {
     unlockAudio();
-    const target = exerciseTarget(ex(), store.state.profile).reps;
+    const target = exerciseTarget(ex(), store.state.profile, ws.dk).reps;
     const tm = ws.timed;
     if (tm && tm.running) ws.timed = { running: false, remaining: Math.max(1, Math.ceil((tm.end - Date.now()) / 1000)) };
     else ws.timed = { running: true, end: Date.now() + (tm ? tm.remaining : target) * 1000 };

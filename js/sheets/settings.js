@@ -78,10 +78,13 @@ const SECTIONS = {
   training: {
     title: "Objectif & entraînement",
     sub: "Ton programme se reconstruit aussitôt.",
-    values: (p) => ({ goal: p.goal, level: p.level, sessionsPerWeek: String(p.sessionsPerWeek || 3), focusZones: (p.focusZones || []).slice(), equipment: (p.equipment || []).slice() }),
+    values: (p) => ({ goal: p.goal, level: p.level, sessionsPerWeek: String(p.sessionsPerWeek || 3), focusZones: (p.focusZones || []).slice(), equipment: (p.equipment || []).slice(), targetWeightKg: p.targetWeightKg || null }),
     body: (v) => html`
       <h3 class="sub-title mt-0">Objectif</h3>
       ${optionList("goal", GOAL_OPTIONS, v.goal)}
+      <div class="field mt-16"><label class="field__label" for="pfTarget">Poids visé <span class="faint">(facultatif)</span></label>
+        <div class="input-wrap"><input class="input" id="pfTarget" inputmode="decimal" value="${v.targetWeightKg ? String(v.targetWeightKg).replace(".", ",") : ""}" placeholder="Par exemple 72"><span class="input-wrap__suffix">kg</span></div>
+        <p class="field-hint">Carnet estime la date d'arrivée d'après ta tendance réelle et te prévient si le rythme est trop rapide.</p></div>
       <h3 class="sub-title">Niveau</h3>
       ${optionList("level", LEVEL_OPTIONS, v.level)}
       <h3 class="sub-title">Séances par semaine</h3>
@@ -93,20 +96,38 @@ const SECTIONS = {
       <h3 class="sub-title">Matériel disponible</h3>
       ${choiceList("equipment", EQUIP_OPTIONS, v.equipment, { multi: true })}
       <p class="field-hint">Les exercices au poids du corps sont toujours inclus.</p>`,
-    read(root, v) { v.sessionsPerWeek = parseInt(v.sessionsPerWeek, 10) || 3; return null; },
+    read(root, v) {
+      v.sessionsPerWeek = parseInt(v.sessionsPerWeek, 10) || 3;
+      const raw = $("#pfTarget", root).value.trim();
+      const tw = Math.round(readNum($("#pfTarget", root)) * 10) / 10;
+      if (raw && !(tw >= 30 && tw <= 250)) return "Le poids visé doit être compris entre 30 et 250 kg.";
+      v.targetWeightKg = raw ? tw : null;
+      return null;
+    },
   },
   food: {
     title: "Alimentation",
     sub: "Les menus respectent ton régime et excluent tes allergènes.",
-    values: (p) => ({ diet: p.diet || "omnivore", allergens: (p.allergens || []).slice(), proteinPrefs: (p.proteinPrefs || []).slice(), useSnacks: p.useSnacks === false ? "0" : "1", lowBudget: !!p.lowBudget }),
+    values: (p) => ({ diet: p.diet || "omnivore", allergens: (p.allergens || []).slice(), proteinPrefs: (p.proteinPrefs || []).slice(), useSnacks: p.useSnacks === false ? "0" : "1", lowBudget: !!p.lowBudget, calorieCycling: p.calorieCycling !== false, adaptive: !!p.adaptive }),
     body: (v, p) => html`
       <h3 class="sub-title mt-0">Régime</h3>
       ${optionList("diet", DIET_OPTIONS, v.diet)}
       <h3 class="sub-title">Allergènes et intolérances</h3>
       ${choiceList("allergens", ALLERGEN_OPTIONS, v.allergens, { multi: true })}
       <p class="field-hint">Choisis « Gluten » pour un régime sans gluten. Vérifie toujours la fiche recette en cas d'allergie sévère.</p>
-      <div data-prefs>${prefsHtml(p, v)}</div>`,
+      <div data-prefs>${prefsHtml(p, v)}</div>
+      <h3 class="sub-title">Calcul des objectifs</h3>
+      <div class="setting-row">
+        <div class="grow"><b>Cyclage calorique</b><p class="field-hint" style="margin:2px 0 0">Un peu plus de glucides les jours d'entraînement, un peu moins les jours de repos. Même moyenne sur la semaine.</p></div>
+        <label class="switch"><input type="checkbox" id="pfCycling" ${v.calorieCycling ? "checked" : ""} aria-label="Cyclage calorique"><span></span></label>
+      </div>
+      <div class="setting-row mt-8">
+        <div class="grow"><b>Dépense réelle</b><p class="field-hint" style="margin:2px 0 0">Après quelques semaines de repas et de pesées, ajuste les objectifs sur ta dépense mesurée plutôt que sur la formule.</p></div>
+        <label class="switch"><input type="checkbox" id="pfAdaptive" ${v.adaptive ? "checked" : ""} aria-label="Dépense réelle"><span></span></label>
+      </div>`,
     read(root, v) {
+      v.calorieCycling = !!$("#pfCycling", root).checked;
+      v.adaptive = !!$("#pfAdaptive", root).checked;
       v.lowBudget = !!$("#pfBudget", root).checked;
       v.useSnacks = v.useSnacks !== "0";
       /* Une préférence devenue impossible avec le nouveau régime est retirée. */

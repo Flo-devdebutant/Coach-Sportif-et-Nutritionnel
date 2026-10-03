@@ -27,6 +27,13 @@ node tools/build.mjs
 
 Régénère la liste des fichiers mis en cache par le service worker et l'identifiant de version (`version.json`). À relancer après l'ajout ou la suppression de fichiers pour qu'ils soient disponibles hors ligne dès l'installation ; un fichier ajouté sans relancer l'outil reste servi et se met en cache à la première demande.
 
+## Moteurs
+
+- **Entraînement** : séries, répétitions et repos selon l'objectif (force/hypertrophie, recomposition, perte de poids) et le niveau ; progression automatique séance après séance (double progression : +1 répétition, puis charge augmentée d'un palier, ou variante plus difficile au poids du corps ; allègement en cas d'échec ou de reprise après 3 semaines) ; remplacement d'un exercice par un équivalent (mêmes muscles, matériel disponible) ; report d'une séance manquée sur un jour de repos ; volume hebdomadaire par muscle comparé aux repères.
+- **Nutrition** : besoins Mifflin-St Jeor avec un écart à la maintenance proportionnel (−20 % en perte, +10 % en prise…), protéines rapportées à un poids de référence, cyclage calorique (plus de glucides les jours d'entraînement, même moyenne hebdomadaire) et, en option, dépense réelle mesurée à partir du journal et des pesées (métabolisme adaptatif).
+- **Suivi** : tendance du poids par régression sur 4 semaines, projection vers un poids visé, dépenses d'activité nettes (sans double comptage du métabolisme de repos).
+- **Coach** : chaque jour, les conseils qui comptent (séance à reporter, progression, rythme de perte trop rapide ou à l'arrêt, protéines insuffisantes, dépense réelle), chacun avec son action en un geste.
+
 ## Structure
 
 ```
@@ -36,7 +43,7 @@ sw.js                   service worker : hors ligne et mises à jour
 css/                    tokens (thèmes clair/sombre), base, composants, vues
 js/app.js               démarrage, actions communes
 js/core/                stockage, évènements, sauvegardes automatiques, utilitaires
-js/engine/              moteurs : entraînement, nutrition, statistiques
+js/engine/              moteurs : entraînement, nutrition, statistiques, coach
 js/services/            synchronisation Firebase, PWA, thème
 js/ui/                  rendu, routeur, feuilles, graphiques, composants
 js/views/               écrans : aujourd'hui, entraînement, nutrition, progrès, profil, inscription, séance guidée

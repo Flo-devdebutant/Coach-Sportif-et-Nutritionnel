@@ -12,33 +12,92 @@ import { addDays, dateKey, hashStr, mulberry32, normTxt } from "../core/util.js"
 
 export { FOOD_CATS };
 
-/* ---------- Besoins quotidiens ---------- */
+/* ---------- Besoins quotidiens ----------
+   Métabolisme de base : Mifflin-St Jeor. L'écart à la maintenance est un
+   POURCENTAGE de la dépense, borné : −500 kcal pèsent bien plus pour un
+   petit gabarit que pour un grand. Repères : perte ≈ −20 % (0,5 à 1 % du
+   poids par semaine), recomposition ≈ −10 %, prise ≈ +10 % (surplus
+   modéré pour limiter la prise de gras).
+   Protéines (ISSN 2017) : 1,6 à 2,2 g/kg, rapportées à un poids de
+   référence plafonné à un IMC de 27 pour ne pas surestimer les besoins
+   en cas de surpoids. Lipides : au moins 0,7 g/kg de référence. */
 const ACTIVITY_FACTORS = { sedentaire: 1.2, leger: 1.375, modere: 1.55, actif: 1.725 };
 const GOAL_PARAMS = {
-  perte: { kcalAdjust: -500, proteinPerKg: 2.0, fatPct: 0.28, floorH: 1500, floorF: 1300 },
-  prise: { kcalAdjust: 350, proteinPerKg: 1.8, fatPct: 0.25, floorH: 1500, floorF: 1300 },
-  tonification: { kcalAdjust: -150, proteinPerKg: 2.0, fatPct: 0.27, floorH: 1500, floorF: 1300 },
-  maintien: { kcalAdjust: 0, proteinPerKg: 1.6, fatPct: 0.30, floorH: 1500, floorF: 1300 },
+  perte: { pct: -0.20, min: -750, max: -300, proteinPerKg: 2.0, fatPct: 0.28 },
+  prise: { pct: 0.10, min: 200, max: 450, proteinPerKg: 1.8, fatPct: 0.25 },
+  tonification: { pct: -0.10, min: -350, max: -150, proteinPerKg: 2.0, fatPct: 0.27 },
+  maintien: { pct: 0, min: 0, max: 0, proteinPerKg: 1.6, fatPct: 0.30 },
 };
+const SEX_FLOOR = { H: 1500, F: 1300 };
 
-export function computeTargets(p) {
-  const bmr = p.sex === "H"
+export function computeBmr(p) {
+  return p.sex === "H"
     ? 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age + 5
     : 10 * p.weightKg + 6.25 * p.heightCm - 5 * p.age - 161;
-  const tdee = bmr * (ACTIVITY_FACTORS[p.activity] || 1.375);
+}
+export const formulaTdee = (p) => computeBmr(p) * (ACTIVITY_FACTORS[p.activity] || 1.375);
+/* Poids de référence pour les besoins en protéines et en lipides. */
+export const referenceWeight = (p) => Math.min(p.weightKg, 27 * (p.heightCm / 100) ** 2);
+
+/* opts.tdee : dépense observée (métabolisme adaptatif) à la place de la
+   formule. */
+export function computeTargets(p, opts = {}) {
+  const bmr = computeBmr(p);
+  const formula = formulaTdee(p);
+  const tdee = opts.tdee > 0 ? opts.tdee : formula;
   const gp = GOAL_PARAMS[p.goal] || GOAL_PARAMS.maintien;
-  let kcal = tdee + gp.kcalAdjust;
-  const floor = p.sex === "H" ? gp.floorH : gp.floorF;
+  const adjust = gp.pct ? Math.max(gp.min, Math.min(gp.max, gp.pct * tdee)) : 0;
+  let kcal = tdee + adjust;
+  /* Plancher : jamais sous le métabolisme de base ni sous le minimum
+     usuel (1500 / 1300 kcal), sauf si la maintenance elle-même est plus
+     basse. */
+  const floor = Math.min(Math.max(SEX_FLOOR[p.sex] || 1300, bmr), Math.max(tdee, SEX_FLOOR[p.sex] || 1300));
   let floorApplied = false;
   if (kcal < floor) { kcal = floor; floorApplied = true; }
-  const proteinG = gp.proteinPerKg * p.weightKg;
-  const fatKcal = kcal * gp.fatPct;
+  const ref = referenceWeight(p);
+  const proteinG = gp.proteinPerKg * ref;
+  const fatKcal = Math.max(kcal * gp.fatPct, 0.7 * ref * 9);
   const carbKcal = Math.max(0, kcal - proteinG * 4 - fatKcal);
   return {
-    bmr: Math.round(bmr), tdee: Math.round(tdee), kcal: Math.round(kcal),
+    bmr: Math.round(bmr), tdee: Math.round(tdee), formulaTdee: Math.round(formula), kcal: Math.round(kcal),
+    adjust: Math.round(kcal - tdee), floor: Math.round(floor), minKcal: SEX_FLOOR[p.sex] || 1300,
     proteinG: Math.round(proteinG), fatG: Math.round(fatKcal / 9), carbG: Math.round(carbKcal / 4),
-    floorApplied,
+    floorApplied, adaptive: opts.tdee > 0,
   };
+}
+
+/* Cyclage calorique : un peu plus les jours d'entraînement, un peu moins
+   les jours de repos, sans changer la moyenne de la semaine. Le surplus
+   passe par les glucides, qui alimentent l'effort ; protéines et lipides
+   restent fixes. */
+export function cyclingFactors(trainingDays) {
+  const t = trainingDays;
+  if (t <= 0 || t >= 7) return null;
+  const up = Math.min(0.07, (0.10 * (7 - t)) / t);
+  return { up, down: (up * t) / (7 - t) };
+}
+export function dayKcal(base, training, factors) {
+  if (!factors) return { ...base, cycle: null };
+  const k = Math.round(base.kcal * (training ? 1 + factors.up : 1 - factors.down));
+  return { ...base, kcal: k, carbG: Math.max(0, Math.round(base.carbG + (k - base.kcal) / 4)), cycle: training ? "up" : "down" };
+}
+
+/* Idées pour combler un manque de protéines, selon le régime et les
+   intolérances (≈ 20 g chacune). */
+const PROTEIN_IDEAS = [
+  { label: "un skyr ou un fromage blanc (200 g)", diet: "vegetarien", allergen: "lactose" },
+  { label: "3 œufs durs", diet: "vegetarien", allergen: "oeufs" },
+  { label: "une boîte de thon au naturel", diet: "omnivore", allergen: "poisson" },
+  { label: "100 g de blanc de poulet", diet: "omnivore", allergen: null },
+  { label: "150 g de tofu ferme", diet: "vegan", allergen: "soja" },
+  { label: "250 g de lentilles ou pois chiches cuits", diet: "vegan", allergen: null },
+  { label: "40 g de graines de courge et une poignée d'amandes", diet: "vegan", allergen: "fruits_a_coque" },
+];
+const DIET_RANK = { vegan: 0, vegetarien: 1, omnivore: 2 };
+export function proteinIdeas(profile, n = 2) {
+  const r = DIET_RANK[profile.diet] ?? 2;
+  const allergens = profile.allergens || [];
+  return PROTEIN_IDEAS.filter((i) => DIET_RANK[i.diet] <= r && !allergens.includes(i.allergen)).slice(0, n).map((i) => i.label);
 }
 
 const BMI_CATS = [
@@ -300,15 +359,18 @@ export function pruneOverrides(state) {
   for (const k of Object.keys(state.mealOverrides || {})) if (k.split("|")[0] < limite) delete state.mealOverrides[k];
 }
 
-export function generateWeekMeals(monday, targetKcal, profile) {
+/* kcalFor : objectif du jour (nombre, ou fonction du jour pour le cyclage
+   calorique). */
+export function generateWeekMeals(monday, kcalFor, profile) {
   const avecCollations = snacksOn(profile);
-  const t = slotTargets(profile, targetKcal);
+  const kcalOf = typeof kcalFor === "function" ? kcalFor : () => kcalFor;
   const recent = { petit_dejeuner: [], dejeuner: [], diner: [], collation: [] };
   const memoriser = (cle, id) => { recent[cle].push(id); if (recent[cle].length > 4) recent[cle].shift(); };
   const days = [];
   for (let i = 0; i < 7; i++) {
     const d = addDays(monday, i);
     const dk = dateKey(d);
+    const t = slotTargets(profile, kcalOf(dk));
     const b = overrideFor(dk, "breakfast") || pickMealForDay("petit_dejeuner", dk, recent.petit_dejeuner, profile, t.breakfast);
     const l = overrideFor(dk, "lunch") || pickMealForDay("dejeuner", dk, recent.dejeuner, profile, t.lunch);
     const din = overrideFor(dk, "dinner") || pickMealForDay("diner", dk, recent.diner, profile, t.dinner);

@@ -5,8 +5,8 @@
    annonce le résultat.
    ========================================================================= */
 import { store, commit } from "./core/store.js";
-import { genId, todayKey, fmtInt, fmtKg } from "./core/util.js";
-import { dayPlan, targets, sortedWeights } from "./engine/stats.js";
+import { genId, todayKey, fmtInt, fmtKg, addDays, dateKey, parseDateOnly, fmtDateFr } from "./core/util.js";
+import { dayPlan, targets, dayTargets, sortedWeights } from "./engine/stats.js";
 import { applyValidation, applyUnvalidation, applySessionDone, exerciseById, activityKcal } from "./engine/training.js";
 import { chooseSwap, pruneOverrides, pruneShopping } from "./engine/nutrition.js";
 import { SLOT_LABELS } from "./engine/labels.js";
@@ -32,7 +32,7 @@ export async function toggleEaten(dk, slot) {
 
 export async function swapMeal(dk, slot) {
   const day = dayPlan(dk).meals;
-  const choisi = chooseSwap(day, slot, targets().kcal);
+  const choisi = chooseSwap(day, slot, dayTargets(dk).kcal);
   if (!choisi) { toast("Aucun autre plat ne correspond à tes critères.", { type: "error" }); return false; }
   await commit((s) => {
     s.mealOverrides[dk + "|" + slot] = choisi.id;
@@ -63,7 +63,7 @@ export async function addIntake({ dk, label, kcal, protein }) {
 
 export async function addActivity(entry) {
   const e = { id: genId("act"), ...entry };
-  e.kcal = activityKcal(e, store.state.profile.weightKg);
+  e.kcal = activityKcal(e, store.state.profile.weightKg, store.state.profile.heightCm);
   await commit((s) => { s.activityLog.push(e); });
   toast(`Activité enregistrée · ${fmtInt(e.kcal)} kcal`);
   return e;
@@ -133,6 +133,41 @@ export async function reopenSession(dk) {
   await commit((s) => { s.sessionLog = s.sessionLog.filter((e) => e.dateKey !== dk); });
 }
 
+/* Remplacer un exercice pour ce jour seulement. La clé reste l'exercice
+   d'origine : remplacer un remplaçant ne crée pas de chaîne. */
+export async function swapExercise(dk, origId, newId) {
+  const alt = exerciseById(newId);
+  if (!alt) return;
+  await commit((s) => {
+    s.exerciseSwaps = s.exerciseSwaps || {};
+    if (origId === newId) delete s.exerciseSwaps[dk + "|" + origId];
+    else s.exerciseSwaps[dk + "|" + origId] = newId;
+    pruneDated(s.exerciseSwaps, (k) => k.split("|")[0]);
+  });
+  toast(origId === newId ? "Exercice d'origine rétabli." : `Remplacé par ${alt.name}.`);
+}
+
+/* Reporter une séance manquée sur un jour de repos de la même semaine. */
+export async function moveSession(from, to) {
+  await commit((s) => {
+    s.sessionMoves = s.sessionMoves || {};
+    s.sessionMoves[from] = to;
+    pruneDated(s.sessionMoves, (k) => k);
+  });
+  toast(`Séance reportée au ${fmtDateFr(parseDateOnly(to)).toLowerCase()}`, {
+    action: { label: "Annuler", fn: () => cancelMove(from, true) },
+  });
+}
+export async function cancelMove(from, silent = false) {
+  await commit((s) => { if (s.sessionMoves) delete s.sessionMoves[from]; });
+  if (!silent) toast("Séance remise à son jour d'origine.", { type: "info" });
+}
+/* Les ajustements de plus de trois semaines n'ont plus d'effet visible. */
+function pruneDated(obj, dkOf) {
+  const limit = dateKey(addDays(parseDateOnly(todayKey()), -21));
+  for (const k of Object.keys(obj)) if (dkOf(k) < limit) delete obj[k];
+}
+
 export async function setEquipFilter(list) {
   await commit((s) => { s.equipFilter = list.slice(); });
 }
@@ -166,6 +201,17 @@ export async function updateProfile(patch) {
   });
   const after = targets().kcal;
   toast(after !== before ? `Profil mis à jour · objectif ${fmtInt(after)} kcal/jour` : "Profil mis à jour.");
+}
+
+/* Réglages des moteurs (métabolisme adaptatif, cyclage calorique). */
+const OPTION_TOASTS = {
+  adaptive: ["Objectifs calculés sur ta dépense réelle", "Objectifs calculés avec la formule"],
+  calorieCycling: ["Cyclage calorique activé", "Même objectif tous les jours"],
+};
+export async function setEngineOption(key, value) {
+  await commit((s) => { s.profile[key] = value; });
+  const [on, off] = OPTION_TOASTS[key] || ["Réglage enregistré", "Réglage enregistré"];
+  toast(`${value ? on : off} · ${fmtInt(targets().kcal)} kcal/jour`);
 }
 
 export const latestWeight = () => {

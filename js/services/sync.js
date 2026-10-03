@@ -265,6 +265,8 @@ async function applyRemoteState(incoming, updatedAt) {
     /* Les plats remplacés voyagent désormais aussi ; un appareil resté sur
        l'ancienne version ne les envoie pas, on garde alors les nôtres. */
     mealOverrides: incoming.mealOverrides && typeof incoming.mealOverrides === "object" ? incoming.mealOverrides : s.mealOverrides,
+    exerciseSwaps: incoming.exerciseSwaps && typeof incoming.exerciseSwaps === "object" ? incoming.exerciseSwaps : s.exerciseSwaps,
+    sessionMoves: incoming.sessionMoves && typeof incoming.sessionMoves === "object" ? incoming.sessionMoves : s.sessionMoves,
     __syncMeta: { updatedAt },
   });
   store.state = next;
@@ -283,7 +285,7 @@ export function pushStateToCloud(immediat) {
     const now = Date.now();
     store.state.__syncMeta = { updatedAt: now };
     const s = store.state;
-    const brut = { profile: s.profile, weightLog: s.weightLog, sessionLog: s.sessionLog, activityLog: s.activityLog, intakeLog: s.intakeLog, mealOverrides: s.mealOverrides };
+    const brut = { profile: s.profile, weightLog: s.weightLog, sessionLog: s.sessionLog, activityLog: s.activityLog, intakeLog: s.intakeLog, mealOverrides: s.mealOverrides, exerciseSwaps: s.exerciseSwaps, sessionMoves: s.sessionMoves };
     try {
       const comprime = await gzipToBase64(JSON.stringify(brut));
       const payload = comprime

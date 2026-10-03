@@ -2,14 +2,15 @@
    NUTRITION — repères du jour, menus à cocher, journal alimentaire,
    liste de courses et préférences.
    ========================================================================= */
-import { html, ic } from "../ui/dom.js";
+import { html, ic, actionsFor } from "../ui/dom.js";
+import { setEngineOption } from "../domain.js";
 import { ring } from "../ui/charts.js";
 import { pageHead, weekStrip, mealCard, metricBar, disclaimer } from "../ui/components.js";
 import { store } from "../core/store.js";
 import { ui } from "../ui/state.js";
-import { fmtInt } from "../core/util.js";
-import { targets, dayPlan, consumedOn, proteinOn, dayStats } from "../engine/stats.js";
-import { mealSlots, GOAL_MEAL_NOTE } from "../engine/nutrition.js";
+import { fmtInt, todayKey } from "../core/util.js";
+import { targets, dayTargets, dayPlan, consumedOn, proteinOn, dayStats, metabolism } from "../engine/stats.js";
+import { mealSlots, GOAL_MEAL_NOTE, proteinIdeas } from "../engine/nutrition.js";
 import { GOAL_LABELS, DIET_LABELS, ALLERGEN_LABELS } from "../engine/labels.js";
 import { journal } from "./today.js";
 
@@ -19,7 +20,8 @@ function marks(dk) {
 }
 
 function dayCard(dk) {
-  const t = targets();
+  const t = dayTargets(dk);
+  const base = targets();
   const day = dayPlan(dk).meals;
   const eaten = consumedOn(dk), prot = proteinOn(dk);
   const pct = t.kcal ? eaten / t.kcal : 0;
@@ -31,7 +33,7 @@ function dayCard(dk) {
         <div class="nutri-hero__pct"><b class="num">${Math.round(pct * 100)}%</b><span>de l'objectif</span></div>
       </div>
       <div class="grow">
-        <p class="eyebrow">Apport du jour</p>
+        <p class="eyebrow">Apport du jour${t.cycle ? html` · <span class="cycle-tag is-${t.cycle}">${t.cycle === "up" ? "jour d'entraînement" : "jour de repos"} ${t.kcal > base.kcal ? "+" : "−"}${fmtInt(Math.abs(t.kcal - base.kcal))}</span>` : ""}</p>
         <p class="nutri-hero__kcal"><b class="num">${fmtInt(eaten)}</b><span> / ${fmtInt(t.kcal)} kcal</span></p>
         <p class="muted nutri-hero__left">${eaten === 0 ? "Coche tes repas au fil de la journée." : t.kcal - eaten >= 0 ? `Encore ${fmtInt(t.kcal - eaten)} kcal à manger` : `${fmtInt(eaten - t.kcal)} kcal au-delà de l'objectif`}</p>
       </div>
@@ -45,6 +47,41 @@ function dayCard(dk) {
       <span><i class="dot" style="background:var(--carbs)"></i>${planned.c} g gluc.</span>
       <span><i class="dot" style="background:var(--fat)"></i>${planned.f} g lip.</span>
     </div>
+    ${proteinGap(dk, planned.p, t.proteinG)}
+  </section>`;
+}
+
+/* Les menus ne couvrent pas tout l'objectif de protéines : idées
+   compatibles avec le régime et les intolérances. */
+function proteinGap(dk, planned, goal) {
+  if (dk < todayKey() || planned >= goal * 0.9) return "";
+  const ideas = proteinIdeas(store.state.profile);
+  return html`<p class="nutri-tip">${ic("lightbulb", "icon-sm")}<span>Les menus apportent ${planned} g de protéines sur ${goal} g visés.${ideas.length ? ` Pour compléter : ${ideas.join(" ou ")}.` : ""}</span></p>`;
+}
+
+/* Dépense estimée : formule, puis dépense observée dès que le journal le
+   permet. */
+function metabolismCard() {
+  const p = store.state.profile;
+  const m = metabolism();
+  const t = targets();
+  let body;
+  if (m.usable) {
+    const diff = m.observed - m.formula;
+    body = html`<p class="muted">D'après tes ${m.days} jours de repas saisis et l'évolution de ton poids, tu dépenses environ <b>${fmtInt(m.observed)} kcal</b> par jour (formule : ${fmtInt(m.formula)} kcal, ${diff >= 0 ? "+" : "−"}${fmtInt(Math.abs(diff))}). Fiabilité ${{ high: "élevée", medium: "moyenne", low: "faible" }[m.confidence]}.</p>
+      <div class="setting-row mt-12">
+        <div class="grow"><b>Ajuster mes objectifs sur ma dépense réelle</b><p class="field-hint" style="margin:2px 0 0">Calcul sur ${fmtInt(m.blended)} kcal de dépense, mis à jour chaque jour.</p></div>
+        <label class="switch"><input type="checkbox" data-change="engine-option" data-key="adaptive" ${p.adaptive ? "checked" : ""} aria-label="Métabolisme adaptatif"><span></span></label>
+      </div>`;
+  } else {
+    const why = m.reason === "implausible"
+      ? "Les données des 4 dernières semaines sont incohérentes avec ton évolution de poids, sans doute des repas non saisis : la formule reste utilisée."
+      : `Saisis tes repas (au moins 10 jours sur 4 semaines${m.days ? `, ${m.days} pour l'instant` : ""}) et pèse-toi chaque semaine : Carnet mesurera ta dépense réelle, souvent différente de la formule de ±10 %.`;
+    body = html`<p class="muted">${why}</p>`;
+  }
+  return html`<section class="section">
+    <div class="section-head"><h2 class="section-title">Ta dépense</h2><span class="faint">${t.adaptive ? "mesurée" : "estimée"} · ${fmtInt(t.tdee)} kcal</span></div>
+    <div class="card metab">${body}</div>
   </section>`;
 }
 
@@ -53,14 +90,15 @@ export const nutritionView = {
   title: "Nutrition",
   render() {
     const p = store.state.profile;
-    const t = targets();
     const dk = ui.date;
+    const base = targets();
+    const t = dayTargets(dk);
     const day = dayPlan(dk).meals;
     let dietLine = DIET_LABELS[p.diet] || "Omnivore";
     if (p.allergens && p.allergens.length) dietLine += " · sans " + p.allergens.map((a) => (ALLERGEN_LABELS[a] || a).toLowerCase()).join(", ");
     return html`
       ${pageHead({
-        eyebrow: `${GOAL_LABELS[p.goal]} · ${fmtInt(t.kcal)} kcal/jour`,
+        eyebrow: `${GOAL_LABELS[p.goal]} · ${fmtInt(base.kcal)} kcal/jour${t.cycle ? " en moyenne" : ""}`,
         title: "Nutrition",
         actions: html`
           <button type="button" class="icon-btn" data-action="open-shopping" aria-label="Liste de courses">${ic("shopping-basket")}</button>
@@ -77,8 +115,9 @@ export const nutritionView = {
               <div class="stat"><p class="stat__label"><i class="dot" style="background:var(--carbs)"></i>Glucides</p><p class="stat__value">${t.carbG}<small>g</small></p></div>
               <div class="stat"><p class="stat__label"><i class="dot" style="background:var(--fat)"></i>Lipides</p><p class="stat__value">${t.fatG}<small>g</small></p></div>
             </div>
-            <p class="field-hint">${GOAL_MEAL_NOTE[p.goal]}${t.floorApplied ? " Un plancher calorique de sécurité est appliqué : ta valeur calculée était plus basse. Pour un déficit plus marqué, fais-toi accompagner par un professionnel." : ""}</p>
+            <p class="field-hint">${GOAL_MEAL_NOTE[p.goal]}${t.floorApplied ? " Un plancher calorique de sécurité est appliqué : ta valeur calculée était plus basse. Pour un déficit plus marqué, fais-toi accompagner par un professionnel." : ""}${t.cycle ? " Les jours d'entraînement reçoivent un peu plus de glucides pour l'effort, les jours de repos un peu moins : la moyenne de la semaine ne change pas." : ""}</p>
           </section>
+          ${metabolismCard()}
           <button type="button" class="card card-link shop-cta mt-16" data-action="open-shopping">
             <span class="library-cta__icon is-intake">${ic("shopping-basket")}</span>
             <span class="grow"><b>Liste de courses</b><span>Les ingrédients de la semaine, rangés par rayon</span></span>
@@ -98,3 +137,5 @@ export const nutritionView = {
       </div>`;
   },
 };
+
+actionsFor({ "engine-option": (el) => setEngineOption(el.dataset.key, el.checked) });

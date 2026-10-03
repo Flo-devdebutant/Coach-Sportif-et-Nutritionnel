@@ -16,7 +16,7 @@
    ========================================================================= */
 
 /* @build:start */
-const BUILD = "83f6d08cb0";
+const BUILD = "4613997917";
 const SHELL = [
   "./",
   "./index.html",
@@ -39,6 +39,7 @@ const SHELL = [
   "./js/data/meals.js",
   "./js/data/muscles.js",
   "./js/domain.js",
+  "./js/engine/coach.js",
   "./js/engine/labels.js",
   "./js/engine/nutrition.js",
   "./js/engine/stats.js",
