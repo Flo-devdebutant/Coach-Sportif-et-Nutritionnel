@@ -13,8 +13,8 @@ import {
   MONTH_NAMES, DOW_LETTERS, DAY_NAMES_SHORT, pad2, fmtDuration, relativeDay,
 } from "../core/util.js";
 import {
-  targets, burnTarget, baseDailyBurn, dayStats, currentStreak, bestStreak, bestDay, weekComparison, weekSummary,
-  sortedWeights, burnedTotal, consumedOn,
+  targets, dayTargets, burnTarget, baseDailyBurn, dayStats, currentStreak, bestStreak, bestDay, weekComparison, weekSummary,
+  sortedWeights, burnedTotal, consumedOn, weightTrend, weightProjection,
 } from "../engine/stats.js";
 import { computeBMI } from "../engine/nutrition.js";
 import { journal } from "./today.js";
@@ -163,6 +163,7 @@ function caloriesTab() {
     const dk = ui.historyDate;
     const st = dayStats(dk);
     const dep = base + st.burn;
+    const td = dayTargets(dk);
     content = html`<div class="card">
       <div class="duo-rings">
         <div class="duo-rings__item">
@@ -171,8 +172,8 @@ function caloriesTab() {
           <p><i class="dot" style="background:var(--burn)"></i>Dépense</p>
         </div>
         <div class="duo-rings__item">
-          ${rings([{ value: st.eat, max: t.kcal, color: "var(--intake)" }], { size: 128, stroke: 12 })}
-          <div class="duo-rings__center"><b class="num">${fmtInt(st.eat)}</b><span>sur ${fmtInt(t.kcal)}</span></div>
+          ${rings([{ value: st.eat, max: td.kcal, color: "var(--intake)" }], { size: 128, stroke: 12 })}
+          <div class="duo-rings__center"><b class="num">${fmtInt(st.eat)}</b><span>sur ${fmtInt(td.kcal)}</span></div>
           <p><i class="dot" style="background:var(--intake)"></i>Apport</p>
         </div>
       </div>
@@ -219,6 +220,55 @@ function bmiGauge(bmi) {
   </div>`;
 }
 
+/* Objectif de poids : progression, rythme réel et date estimée. */
+function goalCard(all) {
+  const proj = weightProjection();
+  const trend = weightTrend(28);
+  const rate = (kg) => `${kg > 0 ? "+" : kg < 0 ? "−" : ""}${fmtNum1(Math.abs(kg))} kg / sem.`;
+  if (!proj.goal) {
+    return html`<section class="section">
+      <div class="section-head"><h2 class="section-title">Objectif de poids</h2></div>
+      <button type="button" class="card card-link goal-cta" data-action="edit-profile" data-section="training">
+        <span class="library-cta__icon is-weight">${ic("flag")}</span>
+        <span class="grow"><b>Fixer un poids visé</b><span>${trend ? `Tendance actuelle : ${rate(trend.perWeek)}. ` : ""}Carnet estime la date d'arrivée et surveille ton rythme.</span></span>
+        ${ic("chevron-right", "list-row__chev")}
+      </button>
+    </section>`;
+  }
+  const start = all.length ? all[0].weightKg : proj.current;
+  const total = proj.goal - start;
+  const doneKg = proj.current - start;
+  const pct = total ? Math.max(0, Math.min(1, doneKg / total)) : 1;
+  const left = proj.goal - proj.current;
+  const STATUS = {
+    reached: ["is-success", "Objectif atteint"],
+    ontrack: ["is-success", "Dans les temps"],
+    toofast: ["is-warn", "Rythme trop rapide"],
+    stalled: ["is-warn", "À l'arrêt"],
+    wrongway: ["is-warn", "À contre-sens"],
+    nodata: ["", "Tendance en cours de calcul"],
+  };
+  const [cls, label] = STATUS[proj.status] || STATUS.nodata;
+  const eta = proj.etaWeeks ? addDays(new Date(), proj.etaWeeks * 7) : null;
+  return html`<section class="section">
+    <div class="section-head"><h2 class="section-title">Objectif de poids</h2><button type="button" class="link" data-action="edit-profile" data-section="training">Modifier</button></div>
+    <div class="card goal">
+      <div class="row-between"><span class="goal__target">${ic("flag")}<b class="num">${fmtKg(proj.goal)}</b></span><span class="chip ${cls}">${label}</span></div>
+      <div class="bar mt-12"><i style="width:${(pct * 100).toFixed(1)}%;background:var(--weight)"></i></div>
+      <div class="row-between goal__ends"><span>${fmtKg(start)}</span><span>${proj.status === "reached" ? "Bravo !" : `encore ${fmtNum1(Math.abs(left))} kg`}</span></div>
+      <div class="goal__stats">
+        <div><span class="faint">Tendance</span><b class="num">${trend ? rate(trend.perWeek) : "—"}</b></div>
+        <div><span class="faint">Rythme prévu</span><b class="num">${proj.plannedPerWeek ? rate(proj.plannedPerWeek) : "stable"}</b></div>
+        <div><span class="faint">Arrivée estimée</span><b>${eta ? eta.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: eta.getFullYear() !== new Date().getFullYear() ? "numeric" : undefined }) : proj.plannedWeeks ? `~${proj.plannedWeeks} sem.` : "—"}</b></div>
+      </div>
+      <p class="field-hint">${proj.status === "toofast" ? "Plus de 1 % du poids par semaine : une partie de la perte vient du muscle. Mange un peu plus, surtout de protéines."
+        : proj.status === "stalled" ? "Ton poids ne bouge plus depuis plusieurs semaines : vérifie tes saisies, ou active la dépense réelle dans Nutrition pour recaler tes objectifs."
+        : proj.status === "wrongway" ? "Ton poids évolue dans le sens opposé à ton objectif. Vérifie que ton objectif (perte, prise…) correspond bien à ton poids visé."
+        : "La tendance est calculée sur tes pesées des 4 dernières semaines : une pesée isolée peut varier de ±1 kg sans signification."}</p>
+    </div>
+  </section>`;
+}
+
 function weightTab() {
   const p = store.state.profile;
   const all = sortedWeights();
@@ -240,6 +290,7 @@ function weightTab() {
         <div class="chips mt-8">
           ${dAll !== null ? html`<span class="chip">${ic("history")}${fmtD(dAll)} depuis le début</span>` : ""}
           ${d30 !== null ? html`<span class="chip">${ic("calendar")}${fmtD(d30)} sur 30 j</span>` : ""}
+          ${weightTrend(28) ? html`<span class="chip">${ic(weightTrend(28).perWeek < 0 ? "trending-down" : "trending-up")}${fmtD(weightTrend(28).perWeek)} / sem.</span>` : ""}
         </div>
       </div>
       <button type="button" class="btn btn-primary" data-action="add-weight">${ic("plus")}Pesée</button>
@@ -255,6 +306,8 @@ function weightTab() {
       </div>
     </section>
     </div><div>
+
+    ${goalCard(all)}
 
     <section class="section">
       <div class="section-head"><h2 class="section-title">Indice de masse corporelle</h2></div>

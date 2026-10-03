@@ -2,14 +2,17 @@
    AUJOURD'HUI — le tableau de bord du jour sélectionné :
    bilan en anneaux, séance prévue, repas à cocher, journal du jour.
    ========================================================================= */
-import { html, ic } from "../ui/dom.js";
+import { html, ic, actionsFor } from "../ui/dom.js";
+import { rerender } from "../ui/router.js";
 import { rings } from "../ui/charts.js";
 import { pageHead, weekStrip, mealCard, exerciseThumb, emptyState } from "../ui/components.js";
 import { store } from "../core/store.js";
 import { ui } from "../ui/state.js";
 import { todayKey, parseDateOnly, fmtDateLong, relativeDay, fmtInt, DAY_NAMES, addDays, dateKey, fmtKg } from "../core/util.js";
-import { targets, burnTarget, baseDailyBurn, dayPlan, dayStats, consumedOn, proteinOn, burnedFromLog, lastWeighIn, daysSince } from "../engine/stats.js";
+import { dayTargets, burnTarget, baseDailyBurn, dayPlan, dayStats, consumedOn, proteinOn, burnedFromLog, lastWeighIn, daysSince } from "../engine/stats.js";
 import { mealSlots } from "../engine/nutrition.js";
+import { insights, dismissInsight } from "../engine/coach.js";
+import { setEngineOption } from "../domain.js";
 import { sessionEstimate, sessionProgress, sessionDoneOn } from "../engine/training.js";
 import { GROUP_LABELS, ACTIVITY_ICONS, CARDIO_LABELS, INTENSITY_LABELS } from "../engine/labels.js";
 
@@ -32,7 +35,7 @@ export function weekMarks(dk) {
 }
 
 function summaryCard(dk) {
-  const t = targets();
+  const t = dayTargets(dk);
   const eaten = consumedOn(dk), burned = burnedFromLog(dk), prot = proteinOn(dk), bt = burnTarget();
   const left = t.kcal - eaten;
   const center = eaten === 0
@@ -155,6 +158,31 @@ export function journal(dk, { title = "Journal du jour", includeSlots = false, s
   </section>`;
 }
 
+/* Conseils du coach : les trois plus importants du moment. */
+function coachSection() {
+  const list = insights().slice(0, 3);
+  if (!list.length) return "";
+  return html`<section class="section coach" aria-label="Conseils du coach">
+    <div class="section-head"><h2 class="section-title">Ton coach</h2></div>
+    <div class="stack">${list.map((x) => html`<article class="insight is-${x.tone}">
+      <span class="insight__icon">${ic(x.icon)}</span>
+      <div class="insight__body">
+        <p class="insight__title">${x.title}</p>
+        <p class="insight__text">${x.text}</p>
+        ${x.action ? (x.action.href
+          ? html`<a class="btn btn-secondary btn-sm mt-8" href="${x.action.href}">${x.action.label}${ic("arrow-right")}</a>`
+          : html`<button type="button" class="btn btn-secondary btn-sm mt-8" data-action="${x.action.name}" ${Object.entries(x.action.data || {}).map(([k, v]) => html`data-${k}="${v}" `)}>${x.action.label}</button>`) : ""}
+      </div>
+      <button type="button" class="icon-btn is-sm is-plain insight__close" data-action="coach-dismiss" data-id="${x.id}" aria-label="Masquer ce conseil pour aujourd'hui">${ic("x")}</button>
+    </article>`)}</div>
+  </section>`;
+}
+
+actionsFor({
+  "coach-dismiss": (el) => { dismissInsight(el.dataset.id); rerender(); },
+  "coach-adaptive": () => setEngineOption("adaptive", true),
+});
+
 function weighNudge() {
   const last = lastWeighIn();
   const since = last ? daysSince(last.dateKey) : 99;
@@ -180,6 +208,7 @@ export const todayView = {
         <div>
           ${summaryCard(dk)}
           ${isToday ? weighNudge() : ""}
+          ${isToday ? coachSection() : ""}
           <section class="section">
             <div class="section-head"><h2 class="section-title">${isToday ? "Séance du jour" : "Séance"}</h2><a class="link" href="#/training">Programme${ic("chevron-right")}</a></div>
             ${sessionCard(dk)}

@@ -127,7 +127,7 @@ export function exerciseThumb(ex, cls = "") {
 export function exerciseRow(ex, dk, { list = "", index = 0, validate = true } = {}) {
   const p = store.state.profile;
   const entry = dk ? exerciseEntryFor(dk, ex.id) : null;
-  const t = exerciseTarget(ex, p);
+  const t = exerciseTarget(ex, p, dk || null);
   let sub = `${GROUP_LABELS[ex.group]} · ${EQUIP_LABELS[ex.equip]}`;
   if (entry) {
     sub = `${entry.sets} × ${entry.reps}${t.enSecondes ? " s" : ""}${entry.load > 0 ? " · " + fmtKg(entry.load) : ""} · ${entry.kcal} kcal`;
@@ -140,11 +140,31 @@ export function exerciseRow(ex, dk, { list = "", index = 0, validate = true } = 
         <span class="exo__name">${ex.name}</span>
         <span class="exo__sub">${sub}</span>
       </span>
-      ${entry ? "" : html`<span class="exo__target">${targetLabel(ex, p)}</span>`}
+      ${entry ? "" : html`<span class="exo__target">${trendIcon(t.trend)}${targetLabel(ex, p, dk || null)}</span>`}
     </button>
     ${validate && dk ? html`<button type="button" class="check is-accent${entry ? " is-on" : ""}" data-action="validate-exercise" data-ex="${ex.id}" data-dk="${dk}"
       aria-label="${entry ? "Modifier la validation" : "Valider l'exercice"}">${ic("check")}</button>` : ""}
   </article>`;
+}
+
+/* Pastille de progression : ce que le moteur propose par rapport à la
+   dernière fois. */
+const TRENDS = {
+  up: ["trending-up", "En progression"],
+  load: ["trending-up", "Charge augmentée"],
+  variant: ["sparkles", "Prêt pour une variante plus difficile"],
+  same: ["repeat", "On consolide"],
+  down: ["trending-down", "Objectif allégé"],
+  start: ["lightbulb", "Première fois"],
+};
+export function trendIcon(trend) {
+  const t = trend !== "start" && TRENDS[trend];
+  return t ? html`<span class="trend is-${trend}" title="${t[1]}">${ic(t[0], "", t[1])}</span>` : "";
+}
+export function trendChip(rx) {
+  const t = TRENDS[rx.trend];
+  if (!t || !rx.note) return "";
+  return html`<div class="rx-note is-${rx.trend}">${ic(t[0])}<p>${rx.note}</p></div>`;
 }
 
 export function disclaimer(text) {

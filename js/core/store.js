@@ -67,7 +67,7 @@ export const local = {
 export function defaultState() {
   return {
     profile: null, weightLog: [], sessionLog: [], activityLog: [], intakeLog: [],
-    mealOverrides: {}, shopping: {}, __syncMeta: null,
+    mealOverrides: {}, exerciseSwaps: {}, sessionMoves: {}, shopping: {}, __syncMeta: null,
   };
 }
 
@@ -78,7 +78,7 @@ export function normalizeState(raw) {
   const s = Object.assign(defaultState(), raw || {});
   for (const k of ["weightLog", "sessionLog", "activityLog", "intakeLog"]) if (!Array.isArray(s[k])) s[k] = [];
   if (!s.mealOverrides || typeof s.mealOverrides !== "object") s.mealOverrides = {};
-  if (!s.shopping || typeof s.shopping !== "object") s.shopping = {};
+  for (const k of ["shopping", "exerciseSwaps", "sessionMoves"]) if (!s[k] || typeof s[k] !== "object" || Array.isArray(s[k])) s[k] = {};
   const p = s.profile;
   if (p) {
     if (!p.sessionsPerWeek) p.sessionsPerWeek = { debutant: 3, intermediaire: 4, avance: 5 }[p.level] || 3;
@@ -90,6 +90,10 @@ export function normalizeState(raw) {
     if (typeof p.useSnacks !== "boolean") p.useSnacks = true;
     if (!p.diet) p.diet = "omnivore";
     if (typeof p.name !== "string") p.name = "";
+    /* Réglages des moteurs apparus avec la progression automatique. */
+    if (typeof p.calorieCycling !== "boolean") p.calorieCycling = true;
+    if (typeof p.adaptive !== "boolean") p.adaptive = false;
+    if (!(p.targetWeightKg > 0)) p.targetWeightKg = null;
   }
   return s;
 }
