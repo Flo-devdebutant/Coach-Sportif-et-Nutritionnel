@@ -9,6 +9,8 @@
 import { EXERCISES } from "../data/exercises.js";
 import { EXERCISE_PHOTOS } from "../data/exercise-photos.js";
 import { EXERCISE_MUSCLES } from "../data/muscles.js";
+import { EXERCISE_ILLUSTRATIONS } from "../data/exercise-illustrations.js";
+const ILLUSTRATED = new Set(EXERCISE_ILLUSTRATIONS);
 import { store } from "../core/store.js";
 import { on } from "../core/events.js";
 import { addDays, dateKey, weekIndex, genId, hashStr, mulberry32, seededShuffle, fmtKg, fmtDateFr, parseDateOnly, todayKey, startOfWeek } from "../core/util.js";
@@ -40,9 +42,12 @@ function muscleOverlap(a, b) {
 export { EXERCISES };
 export const weekKeyOf = (dk) => dateKey(startOfWeek(parseDateOnly(dk)));
 
+/* Démonstration : photos (départ, travail) ou, à défaut, illustrations
+   dessinées dans le même format. */
 export function exercisePhotos(id) {
   const n = EXERCISE_PHOTOS[id] || 0;
-  return Array.from({ length: n }, (_, i) => `assets/exercises/${id}-${i + 1}.webp`);
+  if (n) return Array.from({ length: n }, (_, i) => `assets/exercises/${id}-${i + 1}.webp`);
+  return ILLUSTRATED.has(id) ? [`assets/exercises/${id}-1.svg`, `assets/exercises/${id}-2.svg`] : [];
 }
 
 /* =========================================================================

@@ -33,7 +33,7 @@ const shellFiles = [
   ...walk(join(root, "assets", "fonts"), (n) => n.endsWith(".woff2")),
   ...walk(join(root, "assets", "icons"), (n) => /\.(png|svg)$/.test(n)),
 ];
-const mediaFiles = walk(join(root, "assets", "exercises"), (n) => /\.(webp|png|jpe?g)$/.test(n));
+const mediaFiles = walk(join(root, "assets", "exercises"), (n) => /\.(webp|svg|png|jpe?g)$/.test(n));
 
 const hash = createHash("sha256");
 for (const f of [...shellFiles, ...mediaFiles]) {
