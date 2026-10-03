@@ -1,0 +1,3 @@
+/* Nombre de photos de démonstration par exercice. Fichiers :
+   assets/exercises/<id>-<n>.webp (1 = position de départ, 2 = position de travail). */
+export const EXERCISE_PHOTOS = {"j1":2,"j2":2,"j3":2,"j4":2,"j5":2,"j6":2,"j7":2,"j8":2,"j9":2,"j10":2,"f1":2,"f2":2,"f3":2,"f4":2,"f5":2,"f6":2,"d1":2,"d2":2,"d3":2,"d4":2,"d5":2,"d6":2,"d7":2,"d8":2,"p1":2,"p2":2,"p3":2,"p4":2,"p5":2,"p6":2,"p7":2,"e1":2,"e2":2,"e3":2,"e4":2,"e5":2,"e6":2,"b1":2,"b2":2,"b3":2,"b4":2,"b5":2,"b6":2,"b7":2,"b8":2,"a1":2,"a2":2,"a3":2,"a4":2,"a5":2,"a6":2,"a7":2,"a8":2,"c4":2,"c5":2,"c6":2,"j20":2,"j14":2,"e13":2,"e10":2,"e9":1,"f9":2,"f12":2,"j13":1};
